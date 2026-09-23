@@ -1,0 +1,11 @@
+Lägg kartbilderna här:
+
+  erangel.webp
+  rondo.webp
+  taego.webp
+
+Filer i den här mappen nås som /erangel.webp osv.
+Heter dina filer något annat, ändra sökvägarna i src/App.svelte.
+
+Kontrollera också att "pixels" i src/App.svelte matchar
+varje bilds faktiska bredd i pixlar.

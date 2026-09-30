@@ -3,15 +3,15 @@
 
   let {
     maps = [],
-    spreadMeters = 5, // ungefärlig spridning för ett nedslag
-    maxRange = 696, // mortarens maxräckvidd
-    arcShape = 0.53 // hur snabbt banan planar ut med avståndet (1 = konstant fart)
+    spreadMeters = 5, // rough impact spread
+    maxRange = 696, // mortar max range
+    arcShape = 0.53 // how fast the arc flattens with range (1 = constant muzzle speed)
   } = $props();
 
   const G = 9.81;
   const MAX_SCALE = 6;
   const CLICK_SLOP = 5;
-  const HIT_RADIUS = 16;
+  const REMOVE_METERS = 100; // tap within this of the source to remove it
   const H_LIMIT = 200;
 
   let container = $state(null);
@@ -26,13 +26,13 @@
   let tx = $state(0);
   let ty = $state(0);
 
-  let origin = $state(null); // avfyrningsplats
-  let target = $state(null); // nedslag
+  let origin = $state(null); // firing position
+  let target = $state(null); // impact point
   let cursor = $state(null);
   let panning = $state(false);
-  let sheetOpen = $state(false); // bottenpanelens läge på mobil
+  let sheetOpen = $state(false);
 
-  let deltaH = $state(0); // negativt = målet ligger lägre
+  let deltaH = $state(0); // negative = target sits lower
 
   let ready = false;
   const pointers = new Map();
@@ -54,16 +54,21 @@
 
   const spreadPx = $derived(Math.max(5, (spreadMeters / mpp) * scale));
 
-  // === Ballistik =========================================================
+  // Removal hotspot: REMOVE_METERS on the map, kept tappable when zoomed
+  // out and kept sane when zoomed in.
+  const hitPx = $derived(Math.min(64, Math.max(18, (REMOVE_METERS / mpp) * scale)));
+
+  // === Ballistics ========================================================
   //
-  // Mortaren väljer den höga banlösningen. Pipvinkeln för inställning S:
+  // The mortar takes the high solution. Barrel angle for range setting S:
   //
-  //     θ = 90° − ½·arcsin( (S / R_max)^arcShape )
+  //     θ = 90° − ½·arcsin( (S / maxRange)^arcShape )
   //
-  // och farten väljs så att plan räckvidd blir exakt S — plana skott stämmer
-  // därför alltid, oavsett parametrar. arcShape = 1 ger konstant fart.
+  // and the speed is chosen so flat range equals S exactly, which keeps
+  // level shots correct no matter how the parameters are tuned.
+  // arcShape = 1 means constant muzzle speed.
   //
-  // Kalibrerat mot: 403 m + 130 m höjd → 486, och 503 m + 130 m höjd → 612.
+  // Calibrated against: 403 m + 130 m → 486, and 503 m + 130 m → 612.
 
   const ratioFor = (setting) => Math.pow(Math.min(1, Math.max(0, setting / maxRange)), arcShape);
   const angleFor = (setting) => Math.PI / 2 - 0.5 * Math.asin(ratioFor(setting));
@@ -82,9 +87,10 @@
   }
 
   /**
-   * Höjden vid ett fast avstånd växer inte hela vägen upp till maxräckvidden —
-   * den toppar någonstans och faller sedan. Gyllene-snitt-sök hittar toppen,
-   * sedan bisekterar vi på den växande delen.
+   * Height at a fixed distance does not grow all the way to max range — it
+   * peaks and then falls. Golden-section search finds the peak, then we
+   * bisect on the rising side. Without this, steep uphill shots are all
+   * reported as out of range.
    */
   function dialFor(distance, dh) {
     if (distance <= 0) return null;
@@ -98,7 +104,7 @@
       else b = m2;
     }
     const peak = (a + b) / 2;
-    if (heightAt(distance, peak) < dh) return null; // utom räckhåll
+    if (heightAt(distance, peak) < dh) return null;
 
     let lo = 0.5;
     let hi = peak;
@@ -117,13 +123,11 @@
     const dist = Math.hypot(dx, dy) * mpp;
     const bearing = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
     const dial = dialFor(dist, deltaH);
-    if (dial === null)
-      return { map: dist, bearing, dial: null, delta: 0, launch: null, impact: null };
+    if (dial === null) return { map: dist, bearing, dial: null, launch: null, impact: null };
     return {
       map: dist,
       bearing,
       dial,
-      delta: dial - dist,
       launch: (angleFor(dial) * 180) / Math.PI,
       impact: impactAngle(dist, dial)
     };
@@ -133,10 +137,10 @@
   const preview = $derived(origin && cursor && !panning ? solve(origin, cursor) : null);
 
   const overOrigin = $derived(
-    !!(sOrigin && sCursor && Math.hypot(sCursor.x - sOrigin.x, sCursor.y - sOrigin.y) <= HIT_RADIUS)
+    !!(sOrigin && sCursor && Math.hypot(sCursor.x - sOrigin.x, sCursor.y - sOrigin.y) <= hitPx)
   );
 
-  // === Banprofil i 1:1 ===================================================
+  // === Trajectory profile, drawn 1:1 =====================================
 
   const BAR_STEPS = [25, 50, 100, 200, 400];
 
@@ -146,9 +150,9 @@
     const D = solution.map;
     const S = solution.dial;
     const W = 252;
-    const H = 150;
+    const H = 132;
     const pad = 10;
-    const foot = 18;
+    const foot = 16;
 
     const pts = [];
     let maxY = 0;
@@ -164,7 +168,7 @@
     const worldH = Math.max(1, maxY - minY);
     const boxW = W - pad * 2;
     const boxH = H - pad * 2 - foot;
-    const k = Math.min(boxW / D, boxH / worldH); // samma skala i höjd och längd
+    const k = Math.min(boxW / D, boxH / worldH); // one scale for both axes
 
     const ox = (W - D * k) / 2;
     const oy = pad + (boxH - worldH * k) / 2;
@@ -180,7 +184,7 @@
       start: { x: px(0), y: py(0) },
       end: { x: px(D), y: py(deltaH) },
       apex: Math.round(maxY),
-      bar: { meters: barMeters, width: barMeters * k, x: pad, y: H - 8 }
+      bar: { meters: barMeters, width: barMeters * k, x: pad, y: H - 7 }
     };
   });
 
@@ -213,8 +217,7 @@
   function chooseMap(id) {
     if (id === mapId) return;
     mapId = id;
-    origin = null;
-    target = null;
+    clearAll();
     cursor = null;
     resetView();
   }
@@ -224,7 +227,7 @@
     return { x: (clientX - r.left - tx) / scale, y: (clientY - r.top - ty) / scale };
   }
 
-  // === Interaktion =======================================================
+  // === Interaction =======================================================
 
   function onPointerDown(e) {
     container.setPointerCapture(e.pointerId);
@@ -275,7 +278,7 @@
       if (panning && !multitouch && moved < CLICK_SLOP) place(e.clientX, e.clientY);
       panning = false;
       multitouch = false;
-      if (e.pointerType !== 'mouse') cursor = null; // ingen hovring på touch
+      if (e.pointerType !== 'mouse') cursor = null; // no hover on touch
     }
   }
 
@@ -292,7 +295,7 @@
     const px = clientX - r.left;
     const py = clientY - r.top;
 
-    if (sOrigin && Math.hypot(px - sOrigin.x, py - sOrigin.y) <= HIT_RADIUS) {
+    if (sOrigin && Math.hypot(px - sOrigin.x, py - sOrigin.y) <= hitPx) {
       clearAll();
       return;
     }
@@ -300,13 +303,18 @@
     const p = { x: (px - tx) / scale, y: (py - ty) / scale };
     if (p.x < 0 || p.y < 0 || p.x > map.pixels || p.y > map.pixels) return;
 
-    if (!origin) origin = p;
-    else target = p;
+    if (!origin) {
+      origin = p;
+      deltaH = 0; // a new firing position starts from level ground
+    } else {
+      target = p;
+    }
   }
 
   function clearAll() {
     origin = null;
     target = null;
+    deltaH = 0;
   }
 
   function setDelta(raw) {
@@ -354,7 +362,7 @@
 
   // === Presentation ======================================================
 
-  const fmt = (m) => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`);
+  const fmt = (m) => (m < 1000 ? `${Math.round(m)}` : `${(m / 1000).toFixed(2)}k`);
   const brg = (d) => `${String(Math.round(d) % 360).padStart(3, '0')}°`;
   const signed = (m) => `${m >= 0 ? '+' : '−'}${Math.round(Math.abs(m))} m`;
 
@@ -364,18 +372,6 @@
     const meters = STEPS.find((s) => s >= 120 * mPerPx) ?? STEPS[STEPS.length - 1];
     return { meters, width: meters / mPerPx };
   });
-
-  const hint = $derived(
-    !origin
-      ? 'Tryck för att sätta avfyrningsplats'
-      : overOrigin
-        ? 'Tryck på pricken för att ta bort den'
-        : !target
-          ? 'Tryck på ett mål'
-          : 'Tryck på nästa mål — avfyrningsplatsen ligger kvar'
-  );
-
-  const slopeWord = $derived(deltaH === 0 ? 'plant' : deltaH < 0 ? 'nedför' : 'uppför');
 </script>
 
 <svelte:window onkeydown={onKeyDown} />
@@ -425,52 +421,63 @@
       {#if sTarget}
         <circle class="spread-shadow" cx={sTarget.x} cy={sTarget.y} r={spreadPx} />
         <circle class="spread" cx={sTarget.x} cy={sTarget.y} r={spreadPx} />
-        <circle class="impact" cx={sTarget.x} cy={sTarget.y} r="2" />
+        <circle class="impact" cx={sTarget.x} cy={sTarget.y} r="2.5" />
       {/if}
 
       {#if sOrigin}
-        <circle class="origin-shadow" cx={sOrigin.x} cy={sOrigin.y} r="5" />
-        <circle class="origin" cx={sOrigin.x} cy={sOrigin.y} r="4" />
+        {#if overOrigin}
+          <circle class="hotzone" cx={sOrigin.x} cy={sOrigin.y} r={hitPx} />
+        {/if}
+        <circle class="origin-shadow" cx={sOrigin.x} cy={sOrigin.y} r="6.5" />
+        <circle class="origin" class:armed={overOrigin} cx={sOrigin.x} cy={sOrigin.y} r="5" />
       {/if}
     </svg>
 
+    {#if sOrigin && overOrigin}
+      <div class="chip remove" style="left: {sOrigin.x}px; top: {sOrigin.y - hitPx - 10}px;">
+        Click to remove
+      </div>
+    {/if}
+
     {#if sOrigin && sTarget && solution}
       <div
-        class="tag"
+        class="chip"
         class:over={solution.dial === null}
         style="left: {(sOrigin.x + sTarget.x) / 2}px; top: {(sOrigin.y + sTarget.y) / 2}px;"
       >
-        <strong>{solution.dial === null ? 'utom räckhåll' : fmt(solution.dial)}</strong>
-        <em>{brg(solution.bearing)}</em>
+        {#if solution.dial === null}
+          out of range
+        {:else}
+          <strong>{fmt(solution.dial)} m</strong><em>{brg(solution.bearing)}</em>
+        {/if}
       </div>
     {/if}
 
     {#if preview && sCursor && !overOrigin}
       <div class="ghost" style="left: {sCursor.x}px; top: {sCursor.y}px;">
         {#if preview.dial === null}
-          {fmt(preview.map)} · utom räckhåll
+          out of range
         {:else if deltaH !== 0}
-          {fmt(preview.map)} → <b>{fmt(preview.dial)}</b> · {brg(preview.bearing)}
+          {fmt(preview.map)} → <b>{fmt(preview.dial)} m</b>
         {:else}
-          {fmt(preview.map)} · {brg(preview.bearing)}
+          {fmt(preview.map)} m
         {/if}
       </div>
     {/if}
 
     <div class="tools">
-      <button onclick={() => zoomCenter(1.4)} aria-label="Zooma in">+</button>
-      <button onclick={() => zoomCenter(1 / 1.4)} aria-label="Zooma ut">−</button>
-      <button onclick={resetView} aria-label="Visa hela kartan">
+      <button onclick={() => zoomCenter(1.4)} aria-label="Zoom in">+</button>
+      <button onclick={() => zoomCenter(1 / 1.4)} aria-label="Zoom out">−</button>
+      <button onclick={resetView} aria-label="Fit whole map">
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
           <path
             d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.6"
+            stroke-width="1.8"
           />
         </svg>
       </button>
-      <button onclick={clearAll} disabled={!origin} aria-label="Nollställ punkter">×</button>
     </div>
 
     <div class="scalebar">
@@ -484,56 +491,52 @@
       class="grip"
       onclick={() => (sheetOpen = !sheetOpen)}
       aria-expanded={sheetOpen}
-      aria-label={sheetOpen ? 'Dölj inställningar' : 'Visa inställningar'}
+      aria-label={sheetOpen ? 'Hide controls' : 'Show controls'}
     ></button>
 
-    <div class="lede">
-      <h1>Eldledning</h1>
-      <p>{hint}</p>
-    </div>
-
-    <div class="dial" class:live={!!solution?.dial} class:over={solution?.dial === null}>
-      <span class="label">Ställ in</span>
-      <p class="figure">
-        {#if !solution}
-          <span class="none">—</span>
-        {:else if solution.dial === null}
-          <span class="none">utom räckhåll</span>
-        {:else}
-          {Math.round(solution.dial)}<small>m</small>
-        {/if}
-      </p>
-      <dl class="facts">
-        <div><dt>Avstånd</dt><dd>{solution ? fmt(solution.map) : '—'}</dd></div>
-        <div><dt>Bäring</dt><dd>{solution ? brg(solution.bearing) : '—'}</dd></div>
-        <div>
-          <dt>Höjd</dt>
-          <dd class:accent={deltaH !== 0}>{deltaH === 0 ? '0 m' : signed(deltaH)}</dd>
-        </div>
-      </dl>
-      {#if solution?.dial != null && deltaH !== 0}
-        <p class="delta">Höjden ger {signed(solution.delta)} på inställningen</p>
+    <div class="bar">
+      <h1>Phawkman's Mortar&nbsp;Ruler</h1>
+      {#if origin}
+        <button class="clear" onclick={clearAll}>Clear</button>
       {/if}
     </div>
 
+    <div class="numbers">
+      <div class="big">
+        <span class="cap">Distance</span>
+        <p class="fig">
+          {#if solution}{fmt(solution.map)}<small>m</small>{:else}<span class="void">—</span>{/if}
+        </p>
+      </div>
+      <div class="big set" class:over={solution?.dial === null}>
+        <span class="cap">Set range</span>
+        <p class="fig">
+          {#if !solution}
+            <span class="void">—</span>
+          {:else if solution.dial === null}
+            <span class="oor">out of range</span>
+          {:else}
+            {fmt(solution.dial)}<small>m</small>
+          {/if}
+        </p>
+      </div>
+    </div>
+
+    <div class="pair">
+      <div><span class="cap">Bearing</span><b>{solution ? brg(solution.bearing) : '—'}</b></div>
+      <div>
+        <span class="cap">Elevation</span>
+        <b class:accent={deltaH !== 0}>{deltaH === 0 ? '0 m' : signed(deltaH)}</b>
+      </div>
+    </div>
+
+    {#if !origin}
+      <p class="empty">Tap the map to set your firing position</p>
+    {/if}
+
     <div class="body">
       <section>
-        <div class="head">
-          <h2>Karta</h2>
-          {#if map}<span>{(map.meters / 1000).toFixed(0)} × {(map.meters / 1000).toFixed(0)} km</span>{/if}
-        </div>
-        <div class="pills" role="group" aria-label="Välj karta">
-          {#each maps as m}
-            <button class:on={m.id === mapId} onclick={() => chooseMap(m.id)}>{m.label}</button>
-          {/each}
-        </div>
-      </section>
-
-      <section>
-        <div class="head">
-          <h2>Höjdskillnad</h2>
-          <span class="slope" class:zero={deltaH === 0}>{slopeWord}</span>
-        </div>
+        <span class="cap">Target elevation</span>
         <div class="hrow">
           <input
             class="slider"
@@ -543,7 +546,7 @@
             step="10"
             value={deltaH}
             oninput={(e) => setDelta(e.currentTarget.value)}
-            aria-label="Höjdskillnad i meter, negativt när målet ligger lägre"
+            aria-label="Elevation difference in metres, negative when the target is lower"
           />
           <input
             class="num"
@@ -553,21 +556,15 @@
             step="1"
             value={deltaH}
             onchange={(e) => setDelta(e.currentTarget.value)}
-            aria-label="Höjdskillnad, exakt värde"
+            aria-label="Elevation difference, exact value"
           />
         </div>
-        <div class="ticks">
-          <span>−{H_LIMIT} nedför</span>
-          <span>uppför +{H_LIMIT}</span>
-        </div>
+        <div class="ticks"><span>−{H_LIMIT} below</span><span>above +{H_LIMIT}</span></div>
       </section>
 
-      <section>
-        <div class="head">
-          <h2>Bana</h2>
-          {#if profile}<span>topp {profile.apex} m</span>{/if}
-        </div>
-        {#if profile && solution}
+      {#if profile && solution}
+        <section>
+          <span class="cap">Trajectory</span>
           <svg viewBox="0 0 {profile.W} {profile.H}" class="curve">
             <line
               class="ground"
@@ -603,13 +600,19 @@
               </text>
             </g>
           </svg>
-          <div class="angles">
-            <span>Pipvinkel <b>{Math.round(solution.launch)}°</b></span>
-            <span>Nedslag <b>{Math.round(solution.impact)}°</b></span>
-          </div>
-        {:else}
-          <p class="empty">Sätt ut ett mål så ritas banan här</p>
-        {/if}
+          <p class="caption">
+            Apex {profile.apex} m · Impact {Math.round(solution.impact)}°
+          </p>
+        </section>
+      {/if}
+
+      <section class="maps">
+        <span class="cap">Map</span>
+        <div class="pills" role="group" aria-label="Choose map">
+          {#each maps as m}
+            <button class:on={m.id === mapId} onclick={() => chooseMap(m.id)}>{m.label}</button>
+          {/each}
+        </div>
       </section>
     </div>
   </aside>
@@ -617,22 +620,22 @@
 
 <style>
   .viewer {
-    --bg: #050f13;
-    --surface: #0a1a20;
-    --raise: #102a32;
-    --edge: rgb(255 255 255 / 0.09);
-    --ink: #eaf2f4;
-    --dim: #8ba9b2;
-    --faint: #5b7883;
-    --signal: #ff8a1f;
+    --bg: #030c10;
+    --panel: #07171d;
+    --raise: #0f2b34;
+    --edge: rgb(255 255 255 / 0.16);
+    --ink: #ffffff;
+    --dim: #b3ccd4;
+    --faint: #7c9aa5;
+    --signal: #ff9522;
     --own: #ffffff;
-    --warn: #ff5c4d;
+    --warn: #ff5242;
     --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
     position: relative;
     display: grid;
-    grid-template-columns: 1fr 292px;
+    grid-template-columns: 1fr 300px;
     height: 100%;
     background: var(--bg);
     color: var(--ink);
@@ -641,7 +644,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* --- Karta ----------------------------------------------------------- */
+  /* --- Map -------------------------------------------------------------- */
 
   .stage {
     position: relative;
@@ -678,87 +681,102 @@
   .origin {
     fill: var(--own);
   }
-  .origin-shadow {
-    fill: rgb(0 0 0 / 0.6);
+  .origin.armed {
+    fill: var(--warn);
   }
-  .spread {
-    fill: rgb(255 138 31 / 0.16);
-    stroke: var(--signal);
+  .origin-shadow {
+    fill: rgb(0 0 0 / 0.7);
+  }
+  .hotzone {
+    fill: rgb(255 82 66 / 0.14);
+    stroke: var(--warn);
     stroke-width: 1.5;
+    stroke-dasharray: 5 5;
+  }
+
+  .spread {
+    fill: rgb(255 149 34 / 0.2);
+    stroke: var(--signal);
+    stroke-width: 2;
   }
   .spread-shadow {
     fill: none;
     stroke: #000;
-    stroke-width: 3.5;
-    opacity: 0.5;
+    stroke-width: 4;
+    opacity: 0.6;
   }
   .impact {
     fill: var(--signal);
   }
   .shot-shadow {
     stroke: #000;
-    stroke-width: 4;
-    opacity: 0.5;
+    stroke-width: 5;
+    opacity: 0.6;
   }
   .shot {
     stroke: var(--signal);
-    stroke-width: 1.5;
-    stroke-dasharray: 8 5;
+    stroke-width: 2;
+    stroke-dasharray: 9 5;
   }
   .shot.over {
     stroke: var(--warn);
   }
   .aim {
     stroke: var(--own);
-    stroke-width: 1;
+    stroke-width: 1.2;
     stroke-dasharray: 2 6;
-    opacity: 0.28;
+    opacity: 0.4;
   }
 
-  .tag {
+  .chip {
     position: absolute;
     transform: translate(-50%, -50%);
     display: flex;
     align-items: baseline;
-    gap: 7px;
-    padding: 4px 9px;
+    gap: 8px;
+    padding: 5px 11px;
     border-radius: 999px;
-    background: rgb(5 15 19 / 0.86);
-    border: 1px solid rgb(255 138 31 / 0.6);
-    backdrop-filter: blur(8px);
+    background: rgb(3 12 16 / 0.92);
+    border: 1.5px solid var(--signal);
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 14px;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     pointer-events: none;
   }
-  .tag.over {
+  .chip em {
+    font-style: normal;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--dim);
+  }
+  .chip.over {
     border-color: var(--warn);
     color: var(--warn);
   }
-  .tag strong {
-    font-weight: 600;
-  }
-  .tag em {
-    font-style: normal;
-    font-size: 10px;
-    color: var(--dim);
+  .chip.remove {
+    transform: translate(-50%, -100%);
+    border-color: var(--warn);
+    color: var(--warn);
+    font-family: var(--sans);
+    font-size: 12px;
   }
 
   .ghost {
     position: absolute;
-    transform: translate(14px, 14px);
+    transform: translate(16px, 16px);
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 12px;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: rgb(255 255 255 / 0.6);
-    text-shadow: 0 0 4px #000, 0 0 2px #000;
+    color: rgb(255 255 255 / 0.8);
+    text-shadow: 0 0 5px #000, 0 0 2px #000;
     white-space: nowrap;
     pointer-events: none;
   }
   .ghost b {
     color: var(--signal);
-    font-weight: 600;
   }
 
   .tools {
@@ -767,16 +785,15 @@
     right: 14px;
     display: flex;
     flex-direction: column;
-    gap: 1px;
     overflow: hidden;
     border-radius: 10px;
     border: 1px solid var(--edge);
-    background: rgb(5 15 19 / 0.7);
+    background: rgb(3 12 16 / 0.82);
     backdrop-filter: blur(10px);
   }
   .tools button {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     display: grid;
     place-items: center;
     padding: 0;
@@ -784,20 +801,16 @@
     border-radius: 0;
     background: transparent;
     color: var(--ink);
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1;
     cursor: pointer;
   }
   .tools button + button {
     box-shadow: inset 0 1px 0 var(--edge);
   }
-  .tools button:hover:not(:disabled) {
-    background: rgb(255 255 255 / 0.08);
+  .tools button:hover {
+    background: rgb(255 255 255 / 0.12);
     color: var(--signal);
-  }
-  .tools button:disabled {
-    opacity: 0.3;
-    cursor: default;
   }
 
   .scalebar {
@@ -808,13 +821,14 @@
     align-items: center;
     gap: 8px;
     font-family: var(--mono);
-    font-size: 11px;
-    text-shadow: 0 0 5px #000;
+    font-size: 12px;
+    font-weight: 600;
+    text-shadow: 0 0 6px #000, 0 0 2px #000;
     pointer-events: none;
   }
   .rule {
-    height: 6px;
-    border: 1px solid var(--ink);
+    height: 7px;
+    border: 1.5px solid var(--ink);
     border-top: 0;
     transition: width 0.1s linear;
   }
@@ -825,106 +839,124 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--surface);
+    background: var(--panel);
     border-left: 1px solid var(--edge);
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-
   .grip {
     display: none;
   }
 
-  .lede {
-    padding: 18px 18px 14px;
-  }
-  h1 {
-    margin: 0 0 5px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .lede p {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--faint);
-  }
-
-  .dial {
-    padding: 0 18px 16px;
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 16px;
     border-bottom: 1px solid var(--edge);
   }
-  .label {
-    font-size: 10px;
-    letter-spacing: 0.14em;
+  h1 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .clear {
+    flex: none;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1.5px solid var(--warn);
+    background: transparent;
+    color: var(--warn);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .clear:hover {
+    background: var(--warn);
+    color: #030c10;
+  }
+
+  .numbers {
+    display: flex;
+    flex-direction: column;
+  }
+  .big {
+    padding: 14px 16px;
+  }
+  .big + .big {
+    border-top: 1px solid var(--edge);
+  }
+  .cap {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--faint);
   }
-  .figure {
-    margin: 2px 0 12px;
+  .fig {
+    margin: 4px 0 0;
     font-family: var(--mono);
-    font-size: 42px;
-    font-weight: 600;
+    font-size: 46px;
+    font-weight: 700;
     line-height: 1;
-    letter-spacing: -0.02em;
-    font-variant-numeric: tabular-nums;
-    color: var(--faint);
-  }
-  .dial.live .figure {
-    color: var(--signal);
-  }
-  .figure small {
-    margin-left: 3px;
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--dim);
-  }
-  .figure .none {
-    font-size: 19px;
-    letter-spacing: 0;
-  }
-  .dial.over .figure .none {
-    color: var(--warn);
-  }
-
-  .facts {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin: 0;
-  }
-  .facts div {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-  dt {
-    font-size: 10px;
-    color: var(--faint);
-  }
-  dd {
-    margin: 0;
-    font-family: var(--mono);
-    font-size: 13px;
+    letter-spacing: -0.03em;
     font-variant-numeric: tabular-nums;
     color: var(--ink);
   }
-  dd.accent {
+  .set .fig {
+    color: var(--signal);
+  }
+  .fig small {
+    margin-left: 4px;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--faint);
+  }
+  .void {
+    color: var(--faint);
+  }
+  .oor {
+    font-size: 20px;
+    letter-spacing: 0;
+    color: var(--warn);
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-top: 1px solid var(--edge);
+    border-bottom: 1px solid var(--edge);
+  }
+  .pair div {
+    padding: 11px 16px;
+  }
+  .pair div + div {
+    border-left: 1px solid var(--edge);
+  }
+  .pair b {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .pair b.accent {
     color: var(--signal);
   }
 
-  .delta {
-    margin: 12px 0 0;
-    padding: 7px 9px;
-    border-radius: 6px;
-    background: rgb(255 138 31 / 0.09);
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--dim);
+  .empty {
+    margin: 0;
+    padding: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--faint);
   }
 
   .body {
@@ -932,69 +964,20 @@
     flex-direction: column;
   }
   section {
-    padding: 15px 18px;
+    padding: 14px 16px;
   }
   section + section {
     border-top: 1px solid var(--edge);
   }
-  .head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 10px;
-    margin-bottom: 10px;
-  }
-  h2 {
-    margin: 0;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--faint);
-  }
-  .head span {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--faint);
-  }
-  .slope {
-    color: var(--signal) !important;
-  }
-  .slope.zero {
-    color: var(--faint) !important;
-  }
-
-  .pills {
-    display: flex;
-    gap: 5px;
-  }
-  .pills button {
-    flex: 1;
-    padding: 8px 4px;
-    border-radius: 7px;
-    border: 1px solid var(--edge);
-    background: transparent;
-    color: var(--dim);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-  }
-  .pills button:hover {
-    background: rgb(255 255 255 / 0.05);
-    color: var(--ink);
-  }
-  .pills button.on {
-    background: var(--signal);
-    border-color: var(--signal);
-    color: #06131a;
-    font-weight: 600;
+  .maps {
+    margin-top: auto;
   }
 
   .hrow {
     display: flex;
     align-items: center;
     gap: 12px;
+    margin-top: 10px;
   }
   .slider {
     flex: 1;
@@ -1003,14 +986,15 @@
     accent-color: var(--signal);
   }
   .num {
-    width: 62px;
-    padding: 6px 8px;
-    border-radius: 7px;
-    border: 1px solid var(--edge);
+    width: 68px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    border: 1.5px solid var(--edge);
     background: var(--raise);
     color: var(--ink);
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 15px;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
@@ -1022,27 +1006,28 @@
   .ticks {
     display: flex;
     justify-content: space-between;
-    margin-top: 7px;
-    font-size: 10px;
+    margin-top: 8px;
+    font-size: 11px;
     color: var(--faint);
   }
 
   .curve {
     width: 100%;
     height: auto;
+    margin-top: 10px;
     border-radius: 8px;
     border: 1px solid var(--edge);
-    background: rgb(0 0 0 / 0.28);
+    background: rgb(0 0 0 / 0.4);
   }
   .ground {
     stroke: var(--faint);
-    stroke-width: 1;
+    stroke-width: 1.2;
     stroke-dasharray: 3 3;
   }
   .flight {
     fill: none;
     stroke: var(--signal);
-    stroke-width: 1.5;
+    stroke-width: 2;
   }
   .from {
     fill: var(--own);
@@ -1059,29 +1044,42 @@
     font-family: var(--mono);
     font-size: 8px;
   }
-
-  .angles {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 8px;
-    font-size: 11px;
-    color: var(--faint);
-  }
-  .angles b {
+  .caption {
+    margin: 8px 0 0;
     font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .pills button {
+    flex: 1 1 calc(50% - 3px);
+    padding: 10px 6px;
+    border-radius: 8px;
+    border: 1.5px solid var(--edge);
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 13px;
     font-weight: 600;
+    cursor: pointer;
+  }
+  .pills button:hover {
+    border-color: var(--dim);
     color: var(--ink);
   }
-
-  .empty {
-    margin: 0;
-    padding: 26px 0;
-    text-align: center;
-    font-size: 11px;
-    color: var(--faint);
+  .pills button.on {
+    background: var(--signal);
+    border-color: var(--signal);
+    color: #030c10;
   }
 
-  /* --- Mobil: kartan fyller skärmen, panelen blir ett draglakan --------- */
+  /* --- Mobile: map fills the screen, panel becomes a sheet --------------- */
 
   @media (max-width: 760px) {
     .viewer {
@@ -1096,93 +1094,92 @@
       bottom: auto;
       top: 18px;
     }
-    .tools {
-      top: 14px;
-      right: 14px;
-    }
 
     .panel {
       position: absolute;
       left: 0;
       right: 0;
       bottom: 0;
-      max-height: 82dvh;
+      max-height: 84dvh;
       border-left: 0;
       border-top: 1px solid var(--edge);
       border-radius: 16px 16px 0 0;
-      background: rgb(10 26 32 / 0.93);
+      background: rgb(7 23 29 / 0.96);
       backdrop-filter: blur(18px);
-      box-shadow: 0 -14px 40px rgb(0 0 0 / 0.45);
+      box-shadow: 0 -14px 44px rgb(0 0 0 / 0.55);
       padding-bottom: env(safe-area-inset-bottom);
     }
 
     .grip {
       display: block;
+      position: relative;
+      flex: none;
       width: 100%;
+      height: 24px;
       padding: 0;
-      height: 26px;
       border: 0;
       background: transparent;
       cursor: pointer;
-      position: relative;
-      flex: none;
     }
     .grip::after {
       content: '';
       position: absolute;
       top: 9px;
       left: 50%;
-      width: 38px;
+      width: 40px;
       height: 4px;
       border-radius: 999px;
-      background: rgb(255 255 255 / 0.24);
+      background: rgb(255 255 255 / 0.3);
       transform: translateX(-50%);
     }
 
-    .lede {
-      display: none;
-    }
-    .dial {
-      padding: 4px 16px 14px;
+    .bar {
+      padding: 2px 16px 12px;
       border-bottom: 0;
     }
-    .figure {
-      margin: 0 0 10px;
-      font-size: 36px;
+    .numbers {
+      flex-direction: row;
+      border-top: 1px solid var(--edge);
+    }
+    .big {
+      flex: 1;
+      padding: 12px 16px;
+    }
+    .big + .big {
+      border-top: 0;
+      border-left: 1px solid var(--edge);
+    }
+    .fig {
+      font-size: 38px;
     }
     .body {
       display: none;
-      border-top: 1px solid var(--edge);
     }
     .panel.open .body {
       display: flex;
     }
-    .panel.open .dial {
-      border-bottom: 1px solid var(--edge);
-    }
 
     .tools button {
-      width: 42px;
-      height: 42px;
-      font-size: 17px;
+      width: 44px;
+      height: 44px;
+      font-size: 18px;
     }
     .num {
-      width: 68px;
-      padding: 8px;
-      font-size: 15px;
+      width: 74px;
+      padding: 9px;
+      font-size: 16px;
     }
     .slider {
-      height: 28px;
+      height: 30px;
     }
     .pills button {
-      padding: 11px 4px;
-      font-size: 13px;
+      padding: 13px 6px;
+      font-size: 14px;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .rule,
-    .pills button {
+    .rule {
       transition: none;
     }
   }

@@ -13,8 +13,8 @@
   const CLICK_SLOP = 5;
   const REMOVE_METERS = 100; // tap within this of the source to remove it
 
-  // Range settings the mortar actually offers. Anything we compute snaps
-  // to the nearest one, because those are the only numbers you can dial.
+  // Range settings the mortar actually offers. Anything we compute snaps to
+  // the nearest one, because those are the only numbers you can dial.
   const TABLE = [
     121, 133, 145, 157, 169, 181, 193, 204, 216, 228, 239, 250, 262, 273, 284, 295, 307, 317,
     328, 339, 350, 360, 371, 381, 391, 401, 411, 421, 431, 440, 450, 459, 468, 477, 487, 495,
@@ -24,17 +24,10 @@
   ];
   const snap = (v) => TABLE.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
 
-  // Elevation is a coarse judgement call, and the spread is around 10 m,
-  // so fine-grained input would be false precision. Fixed steps instead.
-  const STEPS_H = [
-    { v: -150, label: '−150' },
-    { v: -75, label: '−75' },
-    { v: -25, label: '−25' },
-    { v: 0, label: 'Level' },
-    { v: 25, label: '+25' },
-    { v: 75, label: '+75' },
-    { v: 150, label: '+150' }
-  ];
+  // Elevation is a coarse call and the spread is around 10 m, so the slider
+  // stops at seven fixed values rather than pretending to be exact.
+  const H_STEPS = [-150, -75, -25, 0, 25, 75, 150];
+  const LEVEL = 3;
 
   let container = $state(null);
   let containerW = $state(0);
@@ -54,7 +47,8 @@
   let panning = $state(false);
   let sheetOpen = $state(false);
 
-  let deltaH = $state(0); // negative = target sits lower
+  let hIndex = $state(LEVEL);
+  const deltaH = $derived(H_STEPS[hIndex]);
 
   let ready = false;
   const pointers = new Map();
@@ -75,21 +69,17 @@
   const sCursor = $derived(toScreen(cursor));
 
   const spreadPx = $derived(Math.max(5, (spreadMeters / mpp) * scale));
-
-  // Removal hotspot: REMOVE_METERS on the map, kept tappable when zoomed
-  // out and kept sane when zoomed in.
   const hitPx = $derived(Math.min(64, Math.max(18, (REMOVE_METERS / mpp) * scale)));
 
   // === Ballistics ========================================================
   //
-  // The mortar takes the high solution. Barrel angle for range setting S:
+  // The game's own range table follows S = 700·sin(2θ), running from 85° at
+  // 121 m down to 45° at 700 m. Barrel angle is therefore read straight off
+  // that relation. For height compensation we use a fitted arc:
   //
   //     θ = 90° − ½·arcsin( (S / maxRange)^arcShape )
   //
-  // and the speed is chosen so flat range equals S exactly, which keeps
-  // level shots correct no matter how the parameters are tuned.
-  // arcShape = 1 means constant muzzle speed.
-  //
+  // with the speed chosen so flat range always equals S exactly.
   // Calibrated against: 403 m + 130 m → 486, and 503 m + 130 m → 612.
 
   const ratioFor = (setting) => Math.pow(Math.min(1, Math.max(0, setting / maxRange)), arcShape);
@@ -102,17 +92,9 @@
     return x * Math.tan(theta) - (G * x * x) / (2 * speedFor(setting) * c * c);
   }
 
-  function impactAngle(x, setting) {
-    const theta = angleFor(setting);
-    const c = Math.cos(theta);
-    return (Math.atan((G * x) / (speedFor(setting) * c * c) - Math.tan(theta)) * 180) / Math.PI;
-  }
-
   /**
-   * Height at a fixed distance does not grow all the way to max range — it
-   * peaks and then falls. Golden-section search finds the peak, then we
-   * bisect on the rising side. Without this, steep uphill shots are all
-   * reported as out of range.
+   * Height at a fixed distance peaks partway up the range scale and then
+   * falls, so find the peak first and bisect on the rising side.
    */
   function dialFor(distance, dh) {
     if (distance <= 0) return null;
@@ -144,14 +126,11 @@
     const dy = b.y - a.y;
     const dist = Math.hypot(dx, dy) * mpp;
     const bearing = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+
     const ideal = dialFor(dist, deltaH);
     if (ideal === null) return { map: dist, bearing, dial: null, reason: 'far' };
     if (ideal < TABLE[0] - 6) return { map: dist, bearing, dial: null, reason: 'near' };
-
-    const dial = snap(ideal);
-    // Barrel angle comes straight from the game's own table: S = 700·sin(2θ)
-    const barrel = 90 - (Math.asin(Math.min(1, dial / 700)) * 180) / Math.PI / 2;
-    return { map: dist, bearing, dial, ideal, barrel, impact: impactAngle(dist, ideal) };
+    return { map: dist, bearing, dial: snap(ideal), ideal };
   }
 
   const solution = $derived(solve(origin, target));
@@ -163,17 +142,14 @@
 
   // === Trajectory profile, drawn 1:1 =====================================
 
-  const BAR_STEPS = [25, 50, 100, 200, 400];
-
   const profile = $derived.by(() => {
     if (!solution || solution.dial === null || solution.map < 1) return null;
 
     const D = solution.map;
     const S = solution.ideal;
-    const W = 252;
-    const H = 132;
-    const pad = 10;
-    const foot = 16;
+    const W = 260;
+    const H = 104;
+    const pad = 9;
 
     const pts = [];
     let maxY = 0;
@@ -187,25 +163,19 @@
     }
 
     const worldH = Math.max(1, maxY - minY);
-    const boxW = W - pad * 2;
-    const boxH = H - pad * 2 - foot;
-    const k = Math.min(boxW / D, boxH / worldH); // one scale for both axes
+    const k = Math.min((W - pad * 2) / D, (H - pad * 2) / worldH); // one scale, both axes
 
     const ox = (W - D * k) / 2;
-    const oy = pad + (boxH - worldH * k) / 2;
+    const oy = pad + (H - pad * 2 - worldH * k) / 2;
     const px = (x) => ox + x * k;
     const py = (y) => oy + (maxY - y) * k;
-
-    const barMeters = [...BAR_STEPS].reverse().find((m) => m * k <= boxW * 0.5) ?? BAR_STEPS[0];
 
     return {
       W,
       H,
       path: pts.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(' '),
       start: { x: px(0), y: py(0) },
-      end: { x: px(D), y: py(deltaH) },
-      apex: Math.round(maxY),
-      bar: { meters: barMeters, width: barMeters * k, x: pad, y: H - 7 }
+      end: { x: px(D), y: py(deltaH) }
     };
   });
 
@@ -326,7 +296,7 @@
 
     if (!origin) {
       origin = p;
-      deltaH = 0; // a new firing position starts from level ground
+      hIndex = LEVEL; // a new firing position starts from level ground
     } else {
       target = p;
     }
@@ -335,7 +305,7 @@
   function clearAll() {
     origin = null;
     target = null;
-    deltaH = 0;
+    hIndex = LEVEL;
   }
 
   function onKeyDown(e) {
@@ -378,14 +348,15 @@
 
   // === Presentation ======================================================
 
-  const fmt = (m) => (m < 1000 ? `${Math.round(m)}` : `${(m / 1000).toFixed(2)}k`);
+  const num = (m) => (m < 1000 ? `${Math.round(m)}` : `${(m / 1000).toFixed(2)}k`);
   const brg = (d) => `${String(Math.round(d) % 360).padStart(3, '0')}°`;
-  const signed = (m) => `${m >= 0 ? '+' : '−'}${Math.round(Math.abs(m))} m`;
+  const signed = (m) => `${m > 0 ? '+' : m < 0 ? '−' : ''}${Math.abs(m)}`;
+  const why = (s) => (s?.reason === 'near' ? 'TOO CLOSE' : 'OUT OF RANGE');
 
-  const STEPS = [10, 25, 50, 100, 250, 500, 1000, 2000, 5000];
+  const SCALE_STEPS = [10, 25, 50, 100, 250, 500, 1000, 2000, 5000];
   const bar = $derived.by(() => {
     const mPerPx = mpp / scale;
-    const meters = STEPS.find((s) => s >= 120 * mPerPx) ?? STEPS[STEPS.length - 1];
+    const meters = SCALE_STEPS.find((s) => s >= 120 * mPerPx) ?? SCALE_STEPS.at(-1);
     return { meters, width: meters / mPerPx };
   });
 </script>
@@ -462,9 +433,9 @@
         style="left: {(sOrigin.x + sTarget.x) / 2}px; top: {(sOrigin.y + sTarget.y) / 2}px;"
       >
         {#if solution.dial === null}
-          {solution.reason === 'near' ? 'too close' : 'out of range'}
+          {why(solution)}
         {:else}
-          <strong>{fmt(solution.dial)} m</strong><em>{brg(solution.bearing)}</em>
+          <strong>{solution.dial}</strong><em>{brg(solution.bearing)}</em>
         {/if}
       </div>
     {/if}
@@ -472,11 +443,9 @@
     {#if preview && sCursor && !overOrigin}
       <div class="ghost" style="left: {sCursor.x}px; top: {sCursor.y}px;">
         {#if preview.dial === null}
-          {preview.reason === 'near' ? 'too close' : 'out of range'}
-        {:else if deltaH !== 0}
-          {fmt(preview.map)} → <b>{fmt(preview.dial)} m</b>
+          {why(preview)}
         {:else}
-          {fmt(preview.map)} m
+          {num(preview.map)} m → <b>{preview.dial}</b>
         {/if}
       </div>
     {/if}
@@ -510,39 +479,27 @@
       aria-label={sheetOpen ? 'Hide controls' : 'Show controls'}
     ></button>
 
-    <div class="bar">
+    <header>
       <h1>Phawkman's Mortar&nbsp;Ruler</h1>
-      {#if origin}
-        <button class="clear" onclick={clearAll}>Clear</button>
+      {#if origin}<button class="clear" onclick={clearAll}>Clear</button>{/if}
+    </header>
+
+    <div class="display" class:live={!!solution?.dial} class:over={solution?.dial === null}>
+      <span class="cap">Set range</span>
+      {#if !solution}
+        <p class="readout idle">- - -</p>
+      {:else if solution.dial === null}
+        <p class="readout alert">{why(solution)}</p>
+      {:else}
+        <p class="readout">{solution.dial}<small>m</small></p>
       {/if}
     </div>
 
-    <div class="numbers">
-      <div class="big">
-        <span class="cap">Distance</span>
-        <p class="fig">
-          {#if solution}{fmt(solution.map)}<small>m</small>{:else}<span class="void">—</span>{/if}
-        </p>
-      </div>
-      <div class="big set" class:over={solution?.dial === null}>
-        <span class="cap">Set range</span>
-        <p class="fig">
-          {#if !solution}
-            <span class="void">—</span>
-          {:else if solution.dial === null}
-            <span class="oor">{solution.reason === 'near' ? 'too close' : 'out of range'}</span>
-          {:else}
-            {fmt(solution.dial)}<small>m</small>
-          {/if}
-        </p>
-      </div>
-    </div>
-
-    <div class="pair">
+    <div class="stats">
+      <div><span class="cap">Distance</span><b>{solution ? `${num(solution.map)} m` : '—'}</b></div>
       <div><span class="cap">Bearing</span><b>{solution ? brg(solution.bearing) : '—'}</b></div>
       <div>
-        <span class="cap">Elevation</span>
-        <b class:accent={deltaH !== 0}>{deltaH === 0 ? '0 m' : signed(deltaH)}</b>
+        <span class="cap">Elev</span><b class:on={deltaH !== 0}>{signed(deltaH)} m</b>
       </div>
     </div>
 
@@ -553,16 +510,26 @@
     <div class="body">
       <section>
         <span class="cap">Target elevation</span>
-        <div class="steps" role="group" aria-label="Target elevation relative to you">
-          {#each STEPS_H as s}
-            <button class:on={deltaH === s.v} onclick={() => (deltaH = s.v)}>{s.label}</button>
+        <input
+          class="slider"
+          type="range"
+          min="0"
+          max={H_STEPS.length - 1}
+          step="1"
+          value={hIndex}
+          oninput={(e) => (hIndex = Number(e.currentTarget.value))}
+          aria-label="Target elevation relative to your position"
+        />
+        <div class="stops">
+          {#each H_STEPS as v, i}
+            <span class:on={i === hIndex}>{v === 0 ? '0' : Math.abs(v)}</span>
           {/each}
         </div>
-        <div class="ticks"><span>Target below</span><span>Target above</span></div>
+        <div class="legend"><span>Below</span><span>Above</span></div>
       </section>
 
-      {#if profile && solution}
-        <section>
+      {#if profile}
+        <section class="arc">
           <span class="cap">Trajectory</span>
           <svg viewBox="0 0 {profile.W} {profile.H}" class="curve">
             <line
@@ -575,35 +542,7 @@
             <polyline class="flight" points={profile.path} />
             <circle class="from" cx={profile.start.x} cy={profile.start.y} r="3" />
             <circle class="to" cx={profile.end.x} cy={profile.end.y} r="3.5" />
-            <g class="ref">
-              <line
-                x1={profile.bar.x}
-                y1={profile.bar.y}
-                x2={profile.bar.x + profile.bar.width}
-                y2={profile.bar.y}
-              />
-              <line
-                x1={profile.bar.x}
-                y1={profile.bar.y - 3}
-                x2={profile.bar.x}
-                y2={profile.bar.y + 3}
-              />
-              <line
-                x1={profile.bar.x + profile.bar.width}
-                y1={profile.bar.y - 3}
-                x2={profile.bar.x + profile.bar.width}
-                y2={profile.bar.y + 3}
-              />
-              <text x={profile.bar.x + profile.bar.width + 5} y={profile.bar.y + 3}>
-                {profile.bar.meters} m
-              </text>
-            </g>
           </svg>
-          <p class="caption">
-            Apex {profile.apex} m · Barrel {Math.round(solution.barrel)}° · Impact {Math.round(
-              solution.impact
-            )}°
-          </p>
         </section>
       {/if}
 
@@ -621,16 +560,14 @@
 
 <style>
   .viewer {
-    --bg: #030c10;
-    --panel: #07171d;
-    --raise: #0f2b34;
-    --edge: rgb(255 255 255 / 0.16);
-    --ink: #ffffff;
-    --dim: #b3ccd4;
-    --faint: #7c9aa5;
-    --signal: #ff9522;
-    --own: #ffffff;
-    --warn: #ff5242;
+    --void: #000305;
+    --panel: #05090b;
+    --hair: rgb(255 255 255 / 0.1);
+    --ink: #e9f3f5;
+    --dim: #8298a0;
+    --faint: #5c7178;
+    --neon: #2bff88;
+    --warn: #ff4d4d;
     --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
@@ -638,7 +575,7 @@
     display: grid;
     grid-template-columns: 1fr 300px;
     height: 100%;
-    background: var(--bg);
+    background: var(--void);
     color: var(--ink);
     font-family: var(--sans);
     font-size: 14px;
@@ -680,42 +617,41 @@
   }
 
   .origin {
-    fill: var(--own);
+    fill: #fff;
   }
   .origin.armed {
     fill: var(--warn);
   }
   .origin-shadow {
-    fill: rgb(0 0 0 / 0.7);
+    fill: rgb(0 0 0 / 0.75);
   }
   .hotzone {
-    fill: rgb(255 82 66 / 0.14);
+    fill: rgb(255 77 77 / 0.12);
     stroke: var(--warn);
     stroke-width: 1.5;
     stroke-dasharray: 5 5;
   }
-
   .spread {
-    fill: rgb(255 149 34 / 0.2);
-    stroke: var(--signal);
+    fill: rgb(43 255 136 / 0.2);
+    stroke: var(--neon);
     stroke-width: 2;
   }
   .spread-shadow {
     fill: none;
     stroke: #000;
-    stroke-width: 4;
-    opacity: 0.6;
+    stroke-width: 4.5;
+    opacity: 0.7;
   }
   .impact {
-    fill: var(--signal);
+    fill: var(--neon);
   }
   .shot-shadow {
     stroke: #000;
-    stroke-width: 5;
-    opacity: 0.6;
+    stroke-width: 5.5;
+    opacity: 0.7;
   }
   .shot {
-    stroke: var(--signal);
+    stroke: var(--neon);
     stroke-width: 2;
     stroke-dasharray: 9 5;
   }
@@ -723,7 +659,7 @@
     stroke: var(--warn);
   }
   .aim {
-    stroke: var(--own);
+    stroke: #fff;
     stroke-width: 1.2;
     stroke-dasharray: 2 6;
     opacity: 0.4;
@@ -736,13 +672,14 @@
     align-items: baseline;
     gap: 8px;
     padding: 5px 11px;
-    border-radius: 999px;
-    background: rgb(3 12 16 / 0.92);
-    border: 1.5px solid var(--signal);
+    border-radius: 4px;
+    background: rgb(0 3 5 / 0.92);
+    border: 1px solid var(--neon);
     font-family: var(--mono);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
+    color: var(--neon);
     white-space: nowrap;
     pointer-events: none;
   }
@@ -752,16 +689,17 @@
     font-weight: 400;
     color: var(--dim);
   }
-  .chip.over {
-    border-color: var(--warn);
-    color: var(--warn);
-  }
+  .chip.over,
   .chip.remove {
-    transform: translate(-50%, -100%);
     border-color: var(--warn);
     color: var(--warn);
     font-family: var(--sans);
     font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+  }
+  .chip.remove {
+    transform: translate(-50%, -100%);
   }
 
   .ghost {
@@ -771,13 +709,13 @@
     font-size: 12px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: rgb(255 255 255 / 0.8);
+    color: rgb(255 255 255 / 0.75);
     text-shadow: 0 0 5px #000, 0 0 2px #000;
     white-space: nowrap;
     pointer-events: none;
   }
   .ghost b {
-    color: var(--signal);
+    color: var(--neon);
   }
 
   .tools {
@@ -787,9 +725,9 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    border-radius: 10px;
-    border: 1px solid var(--edge);
-    background: rgb(3 12 16 / 0.82);
+    border-radius: 8px;
+    border: 1px solid var(--hair);
+    background: rgb(0 3 5 / 0.82);
     backdrop-filter: blur(10px);
   }
   .tools button {
@@ -807,11 +745,11 @@
     cursor: pointer;
   }
   .tools button + button {
-    box-shadow: inset 0 1px 0 var(--edge);
+    box-shadow: inset 0 1px 0 var(--hair);
   }
   .tools button:hover {
-    background: rgb(255 255 255 / 0.12);
-    color: var(--signal);
+    background: rgb(255 255 255 / 0.1);
+    color: var(--neon);
   }
 
   .scalebar {
@@ -829,19 +767,19 @@
   }
   .rule {
     height: 7px;
-    border: 1.5px solid var(--ink);
+    border: 1.5px solid #fff;
     border-top: 0;
     transition: width 0.1s linear;
   }
 
-  /* --- Panel ------------------------------------------------------------ */
+  /* --- Panel: flat rows divided by hairlines, no nested boxes ----------- */
 
   .panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
     background: var(--panel);
-    border-left: 1px solid var(--edge);
+    border-left: 1px solid var(--hair);
     overflow-y: auto;
     overscroll-behavior: contain;
   }
@@ -849,114 +787,115 @@
     display: none;
   }
 
-  .bar {
+  .cap {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--edge);
+    padding: 14px 18px;
   }
   h1 {
     margin: 0;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--dim);
+    color: var(--faint);
   }
   .clear {
     flex: none;
-    padding: 6px 12px;
-    border-radius: 999px;
-    border: 1.5px solid var(--warn);
+    padding: 5px 11px;
+    border-radius: 4px;
+    border: 1px solid var(--warn);
     background: transparent;
     color: var(--warn);
     font: inherit;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     cursor: pointer;
   }
   .clear:hover {
     background: var(--warn);
-    color: #030c10;
+    color: #000;
   }
 
-  .numbers {
-    display: flex;
-    flex-direction: column;
+  /* The main readout — a lit display on black */
+  .display {
+    padding: 4px 18px 22px;
+    background: var(--void);
+    border-bottom: 1px solid var(--hair);
   }
-  .big {
-    padding: 14px 16px;
-  }
-  .big + .big {
-    border-top: 1px solid var(--edge);
-  }
-  .cap {
-    display: block;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--faint);
-  }
-  .fig {
-    margin: 4px 0 0;
+  .readout {
+    margin: 6px 0 0;
     font-family: var(--mono);
-    font-size: 46px;
+    font-size: 76px;
     font-weight: 700;
-    line-height: 1;
-    letter-spacing: -0.03em;
+    line-height: 0.9;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums;
+    color: var(--neon);
+    text-shadow: 0 0 28px rgb(43 255 136 / 0.45);
+  }
+  .readout small {
+    margin-left: 6px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--faint);
+    text-shadow: none;
+  }
+  .readout.idle {
+    color: rgb(43 255 136 / 0.18);
+    text-shadow: none;
+  }
+  .readout.alert {
+    font-family: var(--sans);
+    font-size: 24px;
+    letter-spacing: 0.04em;
+    color: var(--warn);
+    text-shadow: 0 0 22px rgb(255 77 77 / 0.4);
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-bottom: 1px solid var(--hair);
+  }
+  .stats div {
+    padding: 11px 18px;
+  }
+  .stats div + div {
+    border-left: 1px solid var(--hair);
+    padding-left: 14px;
+  }
+  .stats b {
+    display: block;
+    margin-top: 5px;
+    font-family: var(--mono);
+    font-size: 17px;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--ink);
   }
-  .set .fig {
-    color: var(--signal);
-  }
-  .fig small {
-    margin-left: 4px;
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--faint);
-  }
-  .void {
-    color: var(--faint);
-  }
-  .oor {
-    font-size: 20px;
-    letter-spacing: 0;
-    color: var(--warn);
-  }
-
-  .pair {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    border-top: 1px solid var(--edge);
-    border-bottom: 1px solid var(--edge);
-  }
-  .pair div {
-    padding: 11px 16px;
-  }
-  .pair div + div {
-    border-left: 1px solid var(--edge);
-  }
-  .pair b {
-    display: block;
-    margin-top: 4px;
-    font-family: var(--mono);
-    font-size: 20px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .pair b.accent {
-    color: var(--signal);
+  .stats b.on {
+    color: var(--neon);
   }
 
   .empty {
     margin: 0;
-    padding: 16px;
+    padding: 16px 18px;
     font-size: 13px;
-    line-height: 1.5;
     color: var(--faint);
   }
 
@@ -965,62 +904,55 @@
     flex-direction: column;
   }
   section {
-    padding: 14px 16px;
+    padding: 16px 18px;
   }
   section + section {
-    border-top: 1px solid var(--edge);
+    border-top: 1px solid var(--hair);
   }
   .maps {
     margin-top: auto;
   }
 
-  .steps {
-    display: flex;
-    gap: 4px;
-    margin-top: 10px;
+  .slider {
+    width: 100%;
+    margin: 12px 0 0;
+    accent-color: var(--neon);
   }
-  .steps button {
-    flex: 1;
-    min-width: 0;
-    padding: 9px 2px;
-    border-radius: 7px;
-    border: 1.5px solid var(--edge);
-    background: transparent;
-    color: var(--dim);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
+  .slider:focus-visible {
+    outline: 2px solid var(--neon);
+    outline-offset: 3px;
   }
-  .steps button:hover {
-    border-color: var(--dim);
-    color: var(--ink);
-  }
-  .steps button.on {
-    background: var(--signal);
-    border-color: var(--signal);
-    color: #030c10;
-  }
-  .steps button:focus-visible {
-    outline: 2px solid var(--signal);
-    outline-offset: 2px;
-  }
-  .ticks {
+  .stops {
     display: flex;
     justify-content: space-between;
-    margin-top: 8px;
+    margin-top: 6px;
+    font-family: var(--mono);
     font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--faint);
+  }
+  .stops span {
+    flex: 1;
+    text-align: center;
+  }
+  .stops span.on {
+    color: var(--neon);
+    font-weight: 700;
+  }
+  .legend {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
     color: var(--faint);
   }
 
   .curve {
     width: 100%;
     height: auto;
-    margin-top: 10px;
-    border-radius: 8px;
-    border: 1px solid var(--edge);
-    background: rgb(0 0 0 / 0.4);
+    margin-top: 8px;
   }
   .ground {
     stroke: var(--faint);
@@ -1029,29 +961,14 @@
   }
   .flight {
     fill: none;
-    stroke: var(--signal);
+    stroke: var(--neon);
     stroke-width: 2;
   }
   .from {
-    fill: var(--own);
+    fill: #fff;
   }
   .to {
-    fill: var(--signal);
-  }
-  .ref line {
-    stroke: var(--faint);
-    stroke-width: 1;
-  }
-  .ref text {
-    fill: var(--faint);
-    font-family: var(--mono);
-    font-size: 8px;
-  }
-  .caption {
-    margin: 8px 0 0;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--dim);
+    fill: var(--neon);
   }
 
   .pills {
@@ -1063,8 +980,8 @@
   .pills button {
     flex: 1 1 calc(50% - 3px);
     padding: 10px 6px;
-    border-radius: 8px;
-    border: 1.5px solid var(--edge);
+    border-radius: 5px;
+    border: 1px solid var(--hair);
     background: transparent;
     color: var(--dim);
     font: inherit;
@@ -1077,12 +994,12 @@
     color: var(--ink);
   }
   .pills button.on {
-    background: var(--signal);
-    border-color: var(--signal);
-    color: #030c10;
+    background: var(--neon);
+    border-color: var(--neon);
+    color: #000;
   }
 
-  /* --- Mobile: map fills the screen, panel becomes a sheet --------------- */
+  /* --- Mobile ----------------------------------------------------------- */
 
   @media (max-width: 760px) {
     .viewer {
@@ -1105,14 +1022,13 @@
       bottom: 0;
       max-height: 84dvh;
       border-left: 0;
-      border-top: 1px solid var(--edge);
-      border-radius: 16px 16px 0 0;
-      background: rgb(7 23 29 / 0.96);
+      border-top: 1px solid var(--hair);
+      border-radius: 14px 14px 0 0;
+      background: rgb(5 9 11 / 0.97);
       backdrop-filter: blur(18px);
-      box-shadow: 0 -14px 44px rgb(0 0 0 / 0.55);
+      box-shadow: 0 -14px 44px rgb(0 0 0 / 0.6);
       padding-bottom: env(safe-area-inset-bottom);
     }
-
     .grip {
       display: block;
       position: relative;
@@ -1132,28 +1048,18 @@
       width: 40px;
       height: 4px;
       border-radius: 999px;
-      background: rgb(255 255 255 / 0.3);
+      background: rgb(255 255 255 / 0.28);
       transform: translateX(-50%);
     }
-
-    .bar {
-      padding: 2px 16px 12px;
-      border-bottom: 0;
+    header {
+      padding: 2px 18px 10px;
     }
-    .numbers {
-      flex-direction: row;
-      border-top: 1px solid var(--edge);
+    .display {
+      padding: 4px 18px 18px;
+      background: transparent;
     }
-    .big {
-      flex: 1;
-      padding: 12px 16px;
-    }
-    .big + .big {
-      border-top: 0;
-      border-left: 1px solid var(--edge);
-    }
-    .fig {
-      font-size: 38px;
+    .readout {
+      font-size: 62px;
     }
     .body {
       display: none;
@@ -1167,9 +1073,8 @@
       height: 44px;
       font-size: 18px;
     }
-    .steps button {
-      padding: 12px 2px;
-      font-size: 13px;
+    .slider {
+      height: 30px;
     }
     .pills button {
       padding: 13px 6px;

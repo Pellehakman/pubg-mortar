@@ -4,15 +4,37 @@
   let {
     maps = [],
     spreadMeters = 5, // rough impact spread
-    maxRange = 696, // mortar max range
-    arcShape = 0.53 // how fast the arc flattens with range (1 = constant muzzle speed)
+    maxRange = 700, // mortar max range (highest entry in the range table)
+    arcShape = 0.513 // how fast the arc flattens with range (1 = constant muzzle speed)
   } = $props();
 
   const G = 9.81;
   const MAX_SCALE = 6;
   const CLICK_SLOP = 5;
   const REMOVE_METERS = 100; // tap within this of the source to remove it
-  const H_LIMIT = 200;
+
+  // Range settings the mortar actually offers. Anything we compute snaps
+  // to the nearest one, because those are the only numbers you can dial.
+  const TABLE = [
+    121, 133, 145, 157, 169, 181, 193, 204, 216, 228, 239, 250, 262, 273, 284, 295, 307, 317,
+    328, 339, 350, 360, 371, 381, 391, 401, 411, 421, 431, 440, 450, 459, 468, 477, 487, 495,
+    503, 512, 520, 528, 536, 544, 551, 559, 566, 573, 580, 587, 593, 600, 606, 612, 618, 624,
+    629, 635, 639, 644, 649, 653, 658, 662, 666, 669, 673, 676, 679, 682, 685, 687, 689, 691,
+    693, 695, 696, 697, 698, 699, 700
+  ];
+  const snap = (v) => TABLE.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
+
+  // Elevation is a coarse judgement call, and the spread is around 10 m,
+  // so fine-grained input would be false precision. Fixed steps instead.
+  const STEPS_H = [
+    { v: -150, label: '−150' },
+    { v: -75, label: '−75' },
+    { v: -25, label: '−25' },
+    { v: 0, label: 'Level' },
+    { v: 25, label: '+25' },
+    { v: 75, label: '+75' },
+    { v: 150, label: '+150' }
+  ];
 
   let container = $state(null);
   let containerW = $state(0);
@@ -122,15 +144,14 @@
     const dy = b.y - a.y;
     const dist = Math.hypot(dx, dy) * mpp;
     const bearing = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-    const dial = dialFor(dist, deltaH);
-    if (dial === null) return { map: dist, bearing, dial: null, launch: null, impact: null };
-    return {
-      map: dist,
-      bearing,
-      dial,
-      launch: (angleFor(dial) * 180) / Math.PI,
-      impact: impactAngle(dist, dial)
-    };
+    const ideal = dialFor(dist, deltaH);
+    if (ideal === null) return { map: dist, bearing, dial: null, reason: 'far' };
+    if (ideal < TABLE[0] - 6) return { map: dist, bearing, dial: null, reason: 'near' };
+
+    const dial = snap(ideal);
+    // Barrel angle comes straight from the game's own table: S = 700·sin(2θ)
+    const barrel = 90 - (Math.asin(Math.min(1, dial / 700)) * 180) / Math.PI / 2;
+    return { map: dist, bearing, dial, ideal, barrel, impact: impactAngle(dist, ideal) };
   }
 
   const solution = $derived(solve(origin, target));
@@ -148,7 +169,7 @@
     if (!solution || solution.dial === null || solution.map < 1) return null;
 
     const D = solution.map;
-    const S = solution.dial;
+    const S = solution.ideal;
     const W = 252;
     const H = 132;
     const pad = 10;
@@ -317,11 +338,6 @@
     deltaH = 0;
   }
 
-  function setDelta(raw) {
-    const n = Number(raw);
-    deltaH = Number.isFinite(n) ? Math.max(-H_LIMIT, Math.min(H_LIMIT, Math.round(n))) : 0;
-  }
-
   function onKeyDown(e) {
     if (e.target instanceof HTMLInputElement) return;
     if (e.key === 'Escape') target = null;
@@ -446,7 +462,7 @@
         style="left: {(sOrigin.x + sTarget.x) / 2}px; top: {(sOrigin.y + sTarget.y) / 2}px;"
       >
         {#if solution.dial === null}
-          out of range
+          {solution.reason === 'near' ? 'too close' : 'out of range'}
         {:else}
           <strong>{fmt(solution.dial)} m</strong><em>{brg(solution.bearing)}</em>
         {/if}
@@ -456,7 +472,7 @@
     {#if preview && sCursor && !overOrigin}
       <div class="ghost" style="left: {sCursor.x}px; top: {sCursor.y}px;">
         {#if preview.dial === null}
-          out of range
+          {preview.reason === 'near' ? 'too close' : 'out of range'}
         {:else if deltaH !== 0}
           {fmt(preview.map)} → <b>{fmt(preview.dial)} m</b>
         {:else}
@@ -514,7 +530,7 @@
           {#if !solution}
             <span class="void">—</span>
           {:else if solution.dial === null}
-            <span class="oor">out of range</span>
+            <span class="oor">{solution.reason === 'near' ? 'too close' : 'out of range'}</span>
           {:else}
             {fmt(solution.dial)}<small>m</small>
           {/if}
@@ -537,29 +553,12 @@
     <div class="body">
       <section>
         <span class="cap">Target elevation</span>
-        <div class="hrow">
-          <input
-            class="slider"
-            type="range"
-            min={-H_LIMIT}
-            max={H_LIMIT}
-            step="10"
-            value={deltaH}
-            oninput={(e) => setDelta(e.currentTarget.value)}
-            aria-label="Elevation difference in metres, negative when the target is lower"
-          />
-          <input
-            class="num"
-            type="number"
-            min={-H_LIMIT}
-            max={H_LIMIT}
-            step="1"
-            value={deltaH}
-            onchange={(e) => setDelta(e.currentTarget.value)}
-            aria-label="Elevation difference, exact value"
-          />
+        <div class="steps" role="group" aria-label="Target elevation relative to you">
+          {#each STEPS_H as s}
+            <button class:on={deltaH === s.v} onclick={() => (deltaH = s.v)}>{s.label}</button>
+          {/each}
         </div>
-        <div class="ticks"><span>−{H_LIMIT} below</span><span>above +{H_LIMIT}</span></div>
+        <div class="ticks"><span>Target below</span><span>Target above</span></div>
       </section>
 
       {#if profile && solution}
@@ -601,7 +600,9 @@
             </g>
           </svg>
           <p class="caption">
-            Apex {profile.apex} m · Impact {Math.round(solution.impact)}°
+            Apex {profile.apex} m · Barrel {Math.round(solution.barrel)}° · Impact {Math.round(
+              solution.impact
+            )}°
           </p>
         </section>
       {/if}
@@ -973,33 +974,35 @@
     margin-top: auto;
   }
 
-  .hrow {
+  .steps {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    gap: 4px;
     margin-top: 10px;
   }
-  .slider {
+  .steps button {
     flex: 1;
     min-width: 0;
-    margin: 0;
-    accent-color: var(--signal);
-  }
-  .num {
-    width: 68px;
-    padding: 7px 9px;
-    border-radius: 8px;
+    padding: 9px 2px;
+    border-radius: 7px;
     border: 1.5px solid var(--edge);
-    background: var(--raise);
-    color: var(--ink);
+    background: transparent;
+    color: var(--dim);
     font-family: var(--mono);
-    font-size: 15px;
+    font-size: 12px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    text-align: right;
+    cursor: pointer;
   }
-  .num:focus-visible,
-  .slider:focus-visible {
+  .steps button:hover {
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  .steps button.on {
+    background: var(--signal);
+    border-color: var(--signal);
+    color: #030c10;
+  }
+  .steps button:focus-visible {
     outline: 2px solid var(--signal);
     outline-offset: 2px;
   }
@@ -1164,13 +1167,9 @@
       height: 44px;
       font-size: 18px;
     }
-    .num {
-      width: 74px;
-      padding: 9px;
-      font-size: 16px;
-    }
-    .slider {
-      height: 30px;
+    .steps button {
+      padding: 12px 2px;
+      font-size: 13px;
     }
     .pills button {
       padding: 13px 6px;

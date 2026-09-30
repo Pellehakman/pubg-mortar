@@ -7,10 +7,10 @@
   const maps = [
     { id: 'erangel', label: 'Erangel', src: '/erangel.webp', pixels: 4096, meters: 8000 },
     { id: 'miramar', label: 'Miramar', src: '/miramar.webp', pixels: 4096, meters: 8000 },
-    { id: 'rondo', label: 'Rondo', src: '/rondo.webp', pixels: 4096, meters: 8000 },
+    { id: 'rondo', label: 'Rondo', src: '/rondo.webp', pixels: 4096, meters: 8120 },
     { id: 'taego', label: 'Taego', src: '/taego.webp', pixels: 4096, meters: 8000 }
   ];
 </script>
 
 <!-- Calibrated against: 403 m + 130 m → 486, and 503 m + 130 m → 612 -->
-<MapViewer {maps} spreadMeters={5} maxRange={696} arcShape={0.53} />
+<MapViewer {maps} spreadMeters={5} maxRange={700} arcShape={0.513} />

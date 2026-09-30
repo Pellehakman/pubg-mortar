@@ -507,27 +507,27 @@
       <p class="empty">Tap the map to set your firing position</p>
     {/if}
 
-    <div class="body">
-      <section>
-        <span class="cap">Target elevation</span>
-        <input
-          class="slider"
-          type="range"
-          min="0"
-          max={H_STEPS.length - 1}
-          step="1"
-          value={hIndex}
-          oninput={(e) => (hIndex = Number(e.currentTarget.value))}
-          aria-label="Target elevation relative to your position"
-        />
-        <div class="stops">
-          {#each H_STEPS as v, i}
-            <span class:on={i === hIndex}>{v === 0 ? '0' : Math.abs(v)}</span>
-          {/each}
-        </div>
-        <div class="legend"><span>Below</span><span>Above</span></div>
-      </section>
+    <section class="elev">
+      <span class="cap">Target elevation</span>
+      <input
+        class="slider"
+        type="range"
+        min="0"
+        max={H_STEPS.length - 1}
+        step="1"
+        value={hIndex}
+        oninput={(e) => (hIndex = Number(e.currentTarget.value))}
+        aria-label="Target elevation relative to your position"
+      />
+      <div class="stops">
+        {#each H_STEPS as v, i}
+          <span class:on={i === hIndex}>{v === 0 ? '0' : Math.abs(v)}</span>
+        {/each}
+      </div>
+      <div class="legend"><span>Below</span><span>Above</span></div>
+    </section>
 
+    <div class="body">
       {#if profile}
         <section class="arc">
           <span class="cap">Trajectory</span>
@@ -545,16 +545,16 @@
           </svg>
         </section>
       {/if}
-
-      <section class="maps">
-        <span class="cap">Map</span>
-        <div class="pills" role="group" aria-label="Choose map">
-          {#each maps as m}
-            <button class:on={m.id === mapId} onclick={() => chooseMap(m.id)}>{m.label}</button>
-          {/each}
-        </div>
-      </section>
     </div>
+
+    <section class="maps">
+      <span class="cap">Map</span>
+      <div class="pills" role="group" aria-label="Choose map">
+        {#each maps as m}
+          <button class:on={m.id === mapId} onclick={() => chooseMap(m.id)}>{m.label}</button>
+        {/each}
+      </div>
+    </section>
   </aside>
 </div>
 
@@ -870,7 +870,6 @@
   .stats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    border-bottom: 1px solid var(--hair);
   }
   .stats div {
     padding: 11px 18px;
@@ -895,6 +894,7 @@
   .empty {
     margin: 0;
     padding: 16px 18px;
+    border-top: 1px solid var(--hair);
     font-size: 13px;
     color: var(--faint);
   }
@@ -905,8 +905,6 @@
   }
   section {
     padding: 16px 18px;
-  }
-  section + section {
     border-top: 1px solid var(--hair);
   }
   .maps {
@@ -1059,13 +1057,20 @@
       background: transparent;
     }
     .readout {
-      font-size: 62px;
+      font-size: 46px;
     }
-    .body {
+    .stats {
+      display: none;
+    }
+    .body,
+    .maps {
       display: none;
     }
     .panel.open .body {
       display: flex;
+    }
+    .panel.open .maps {
+      display: block;
     }
 
     .tools button {

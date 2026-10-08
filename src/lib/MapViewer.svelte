@@ -26,8 +26,10 @@
 
   // Elevation is a coarse call and the spread is around 10 m, so the slider
   // stops at seven fixed values rather than pretending to be exact.
-  const H_STEPS = [-150, -75, -25, 0, 25, 75, 150];
-  const LEVEL = 3;
+  const H_STEPS = [
+    -175, -150, -125, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125, 150, 175
+  ];
+  const LEVEL = H_STEPS.indexOf(0);
 
   let container = $state(null);
   let containerW = $state(0);
@@ -148,8 +150,8 @@
     const D = solution.map;
     const S = solution.ideal;
     const W = 260;
-    const H = 104;
-    const pad = 9;
+    const H = 128;
+    const pad = 11;
 
     const pts = [];
     let maxY = 0;
@@ -170,9 +172,18 @@
     const px = (x) => ox + x * k;
     const py = (y) => oy + (maxY - y) * k;
 
+    // Horizontal rules at round altitudes. Because the drawing is 1:1, these
+    // double as a ruler for the horizontal axis too.
+    const step = [25, 50, 100, 200, 500].find((v) => worldH / v <= 5) ?? 1000;
+    const grid = [];
+    for (let v = Math.ceil(minY / step) * step; v <= maxY; v += step) {
+      grid.push({ y: py(v), label: `${v} m` });
+    }
+
     return {
       W,
       H,
+      grid,
       path: pts.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(' '),
       start: { x: px(0), y: py(0) },
       end: { x: px(D), y: py(deltaH) }
@@ -508,7 +519,10 @@
     {/if}
 
     <section class="elev">
-      <span class="cap">Target elevation</span>
+      <div class="head">
+        <span class="cap">Target elevation</span>
+        <b class="now" class:on={deltaH !== 0}>{signed(deltaH)} m</b>
+      </div>
       <input
         class="slider"
         type="range"
@@ -519,12 +533,11 @@
         oninput={(e) => (hIndex = Number(e.currentTarget.value))}
         aria-label="Target elevation relative to your position"
       />
-      <div class="stops">
-        {#each H_STEPS as v, i}
-          <span class:on={i === hIndex}>{v === 0 ? '0' : Math.abs(v)}</span>
-        {/each}
+      <div class="legend">
+        <span>−175 m below</span>
+        <span>0</span>
+        <span>above +175 m</span>
       </div>
-      <div class="legend"><span>Below</span><span>Above</span></div>
     </section>
 
     <div class="body">
@@ -532,6 +545,10 @@
         <section class="arc">
           <span class="cap">Trajectory</span>
           <svg viewBox="0 0 {profile.W} {profile.H}" class="curve">
+            {#each profile.grid as g}
+              <line class="grid" x1="11" y1={g.y} x2={profile.W - 11} y2={g.y} />
+              <text class="alt" x="11" y={g.y - 3}>{g.label}</text>
+            {/each}
             <line
               class="ground"
               x1={profile.start.x}
@@ -920,29 +937,28 @@
     outline: 2px solid var(--neon);
     outline-offset: 3px;
   }
-  .stops {
+  .head {
     display: flex;
+    align-items: baseline;
     justify-content: space-between;
-    margin-top: 6px;
+    gap: 10px;
+  }
+  .now {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 15px;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--faint);
   }
-  .stops span {
-    flex: 1;
-    text-align: center;
-  }
-  .stops span.on {
+  .now.on {
     color: var(--neon);
-    font-weight: 700;
   }
   .legend {
     display: flex;
     justify-content: space-between;
-    margin-top: 4px;
+    margin-top: 6px;
     font-size: 10px;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--faint);
   }
@@ -951,6 +967,15 @@
     width: 100%;
     height: auto;
     margin-top: 8px;
+  }
+  .grid {
+    stroke: rgb(255 255 255 / 0.1);
+    stroke-width: 1;
+  }
+  .alt {
+    fill: var(--faint);
+    font-family: var(--mono);
+    font-size: 8px;
   }
   .ground {
     stroke: var(--faint);

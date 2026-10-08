@@ -3,7 +3,7 @@
 
   // Cosmetic gate only — these end up in the built JavaScript in plain text.
   const USER = 'admin';
-  const PASS = 'change-me';
+  const PASS = '056313101';
 
   let authed = $state(false);
   let user = $state('');

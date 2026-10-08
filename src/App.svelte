@@ -3,8 +3,8 @@
   import Login from './lib/Login.svelte';
 
   // Cosmetic gate only. These end up in the built JavaScript in plain text.
-  const USER = 'phawkman';
-  const PASS = 'mortar';
+  const USER = 'admin';
+  const PASS = '056313101';
   const KEY = 'pmr.auth';
 
   let authed = $state(false);
